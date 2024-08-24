@@ -182,20 +182,23 @@ func TestEncoding(t *testing.T) {
 }
 
 func TestMultiError(t *testing.T) {
-	s1, err1 := New(nil)
-	s2, err2 := New(nil)
+	s1, err1 := New([]byte("12345678901234567890123456789012"))
+	s2, err2 := New([]byte("abcdefghijklmnopqrstuvwxyz123456"))
 	if err1 != nil {
 		t.Fatal(err1)
 	}
 	if err2 != nil {
 		t.Fatal(err2)
 	}
-	_, err := EncodeMulti("sid", "value", s1, s2)
+	_, err := EncodeMulti("sid", New, s1, s2)
+	if err == nil {
+		t.Fatal("Expected failure encoding.")
+	}
 	if len(err.(MultiError)) != 2 {
 		t.Errorf("Expected 2 errors, got %s.", err)
 	} else {
-		if !strings.Contains(err.Error(), "hash key is not set") {
-			t.Errorf("Expected missing hash key error, got %s.", err.Error())
+		if !strings.Contains(err.Error(), "unsupported type") {
+			t.Errorf("Expected unsupported type error, got %s.", err.Error())
 		}
 	}
 }

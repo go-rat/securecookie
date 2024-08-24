@@ -136,7 +136,7 @@ func (s *SecureCookie) Encode(name string, value any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	nonce := make([]byte, aead.NonceSize(), aead.NonceSize()+len(b)+aead.Overhead())
+	nonce := GenerateRandomKey(aead.NonceSize())
 	if _, err = rand.Read(nonce); err != nil {
 		return "", err
 	}
@@ -174,7 +174,7 @@ func (s *SecureCookie) Decode(name, value string, dst any) error {
 	if err != nil {
 		return err
 	}
-	// 3. Decrypt
+	// 3. Decrypt.
 	aead, err := chacha20poly1305.NewX(s.key)
 	if err != nil {
 		return err
@@ -241,6 +241,23 @@ func decode(value []byte) ([]byte, error) {
 }
 
 // Helpers --------------------------------------------------------------------
+
+// GenerateRandomKey creates a random key with the given length in bytes.
+// On failure, returns nil.
+//
+// Note that keys created using `GenerateRandomKey()` are not automatically
+// persisted. New keys will be created when the application is restarted, and
+// previously issued cookies will not be able to be decoded.
+//
+// Callers should explicitly check for the possibility of a nil return, treat
+// it as a failure of the system random number generator, and not continue.
+func GenerateRandomKey(length int) []byte {
+	b := make([]byte, length)
+	if _, err := rand.Read(b); err != nil {
+		panic(fmt.Sprintf("securecookie: error generating random key: %v", err))
+	}
+	return b
+}
 
 // CodecsFromPairs returns a slice of SecureCookie instances.
 //
