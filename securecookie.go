@@ -23,6 +23,16 @@ var (
 	ErrValueNotBytePtr  = fmt.Errorf("the value is not a *[]byte")
 )
 
+var DefaultOptions = &Options{
+	MinAge:     0,
+	MaxAge:     86400 * 30,
+	MaxLength:  4096,
+	Serializer: JSONEncoder{},
+	TimeFunc: func() int64 {
+		return time.Now().UTC().Unix()
+	},
+}
+
 // Codec defines an interface to encode and decode cookie values.
 type Codec interface {
 	Encode(name string, value any) (string, error)
@@ -43,73 +53,46 @@ type Codec interface {
 // Note that keys created using GenerateRandomKey() are not automatically
 // persisted. New keys will be created when the application is restarted, and
 // previously issued cookies will not be able to be decoded.
-func New(key []byte) (*SecureCookie, error) {
+func New(key []byte, options *Options) (*SecureCookie, error) {
 	if len(key) != chacha20poly1305.KeySize {
 		return nil, ErrKeyLength
 	}
+	if options == nil {
+		options = DefaultOptions
+	}
 	s := &SecureCookie{
-		key:       key,
-		maxAge:    86400 * 30,
-		maxLength: 4096,
-		sz:        JSONEncoder{},
-		timeFunc:  func() int64 { return time.Now().UTC().Unix() },
+		key:         key,
+		rotatedKeys: options.RotatedKeys,
+		minAge:      options.MinAge,
+		maxAge:      options.MaxAge,
+		maxLength:   options.MaxLength,
+		sz:          options.Serializer,
+		timeFunc:    options.TimeFunc,
 	}
 	return s, nil
+}
+
+type Options struct {
+	RotatedKeys [][]byte
+	MinAge      int64
+	MaxAge      int64
+	MaxLength   int
+	Serializer  Serializer
+	TimeFunc    func() int64
 }
 
 // SecureCookie encodes and decodes authenticated and optionally encrypted
 // cookie values.
 type SecureCookie struct {
-	key       []byte
-	maxLength int
-	maxAge    int64
-	minAge    int64
-	sz        Serializer
+	key         []byte
+	rotatedKeys [][]byte
+	maxLength   int
+	maxAge      int64
+	minAge      int64
+	sz          Serializer
 	// For testing purposes, the function that returns the current timestamp.
 	// If not set, it will use time.Now().UTC().Unix().
 	timeFunc func() int64
-}
-
-// MaxLength restricts the maximum length, in bytes, for the cookie value.
-//
-// Default is 4096, which is the maximum value accepted by Internet Explorer.
-func (s *SecureCookie) MaxLength(value int) *SecureCookie {
-	s.maxLength = value
-	return s
-}
-
-// MaxAge restricts the maximum age, in seconds, for the cookie value.
-//
-// Default is 86400 * 30. Set it to 0 for no restriction.
-func (s *SecureCookie) MaxAge(value int) *SecureCookie {
-	s.maxAge = int64(value)
-	return s
-}
-
-// MinAge restricts the minimum age, in seconds, for the cookie value.
-//
-// Default is 0 (no restriction).
-func (s *SecureCookie) MinAge(value int) *SecureCookie {
-	s.minAge = int64(value)
-	return s
-}
-
-// SetSerializer sets the encoding/serialization method for cookies.
-//
-// Default is encoding/gob.  To encode special structures using encoding/gob,
-// they must be registered first using gob.Register().
-func (s *SecureCookie) SetSerializer(sz Serializer) *SecureCookie {
-	s.sz = sz
-	return s
-}
-
-// SetTimeFunc sets the function that returns the current timestamp.
-//
-// For testing purposes, the function that generates the timestamp can be
-// overridden. If not set, it will return time.Now().UTC().Unix().
-func (s *SecureCookie) SetTimeFunc(f func() int64) *SecureCookie {
-	s.timeFunc = f
-	return s
 }
 
 // Encode encodes a cookie value.
@@ -126,27 +109,26 @@ func (s *SecureCookie) SetTimeFunc(f func() int64) *SecureCookie {
 // is shorter than the maximum permissible length.
 func (s *SecureCookie) Encode(name string, value any) (string, error) {
 	var err error
+	var errors MultiError
 	var b []byte
 	// 1. Serialize.
 	if b, err = s.sz.Serialize(value); err != nil {
 		return "", err
 	}
 	// 2. Encrypt.
-	aead, err := chacha20poly1305.NewX(s.key)
+	key := s.key
+	index := -1
+walk:
+	b, err = s.encrypt(name, key, b)
 	if err != nil {
-		return "", err
+		errors = append(errors, err)
+		if index++; index < len(s.rotatedKeys) {
+			key = s.rotatedKeys[index]
+			goto walk
+		} else {
+			return "", errors
+		}
 	}
-	nonce := GenerateRandomKey(aead.NonceSize())
-	if _, err = rand.Read(nonce); err != nil {
-		return "", err
-	}
-	// We create a buffer of "name|timestamp|ciphertext" so that we can verify
-	// the validity of the timestamp after decrypting, but before deserializing.
-	buf := new(bytes.Buffer)
-	buf.WriteString(name + "|")
-	buf.WriteString(strconv.FormatInt(s.timestamp(), 10) + "|")
-	buf.Write(b)
-	b = aead.Seal(nonce, nonce, buf.Bytes(), nil)
 	b = encode(b)
 	// 3. Check length.
 	if s.maxLength != 0 && len(b) > s.maxLength {
@@ -165,6 +147,8 @@ func (s *SecureCookie) Encode(name string, value any) (string, error) {
 // it was stored. The value argument is the encoded cookie value. The dst
 // argument is where the cookie will be decoded. It must be a pointer.
 func (s *SecureCookie) Decode(name, value string, dst any) error {
+	var err error
+	var errors MultiError
 	// 1. Check length.
 	if s.maxLength != 0 && len(value) > s.maxLength {
 		return fmt.Errorf("the value is too long: %d", len(value))
@@ -175,17 +159,18 @@ func (s *SecureCookie) Decode(name, value string, dst any) error {
 		return err
 	}
 	// 3. Decrypt.
-	aead, err := chacha20poly1305.NewX(s.key)
+	key := s.key
+	index := -1
+walk:
+	b, err = s.decrypt(key, b)
 	if err != nil {
-		return err
-	}
-	if len(b) < aead.NonceSize() {
-		return ErrDecryptionFailed
-	}
-	nonce, ciphertext := b[:aead.NonceSize()], b[aead.NonceSize():]
-	b, err = aead.Open(nil, nonce, ciphertext, nil)
-	if err != nil {
-		return err
+		errors = append(errors, err)
+		if index++; index < len(s.rotatedKeys) {
+			key = s.rotatedKeys[index]
+			goto walk
+		} else {
+			return errors
+		}
 	}
 	parts := bytes.SplitN(b, []byte("|"), 3)
 	if len(parts) != 3 {
@@ -219,6 +204,41 @@ func (s *SecureCookie) Decode(name, value string, dst any) error {
 // overridden. If not set, it will return time.Now().UTC().Unix().
 func (s *SecureCookie) timestamp() int64 {
 	return s.timeFunc()
+}
+
+// encrypt encrypts a value using the given key, nonce will be generated
+// and prepended to the ciphertext.
+func (s *SecureCookie) encrypt(name string, key, value []byte) ([]byte, error) {
+	aead, err := chacha20poly1305.NewX(key)
+	if err != nil {
+		return nil, err
+	}
+	nonce := GenerateRandomKey(aead.NonceSize())
+	if _, err = rand.Read(nonce); err != nil {
+		return nil, err
+	}
+	// We create a buffer of "name|timestamp|ciphertext" so that we can verify
+	// the validity of the timestamp after decrypting, but before deserializing.
+	buf := new(bytes.Buffer)
+	buf.WriteString(name + "|")
+	buf.WriteString(strconv.FormatInt(s.timestamp(), 10) + "|")
+	buf.Write(value)
+	value = aead.Seal(nonce, nonce, buf.Bytes(), nil)
+	return value, nil
+}
+
+// decrypt decrypts a value using the given key, nonce will be extracted from
+// the ciphertext.
+func (s *SecureCookie) decrypt(key, value []byte) ([]byte, error) {
+	aead, err := chacha20poly1305.NewX(key)
+	if err != nil {
+		return nil, err
+	}
+	if len(value) < aead.NonceSize() {
+		return nil, ErrDecryptionFailed
+	}
+	nonce, ciphertext := value[:aead.NonceSize()], value[aead.NonceSize():]
+	return aead.Open(nil, nonce, ciphertext, nil)
 }
 
 // Encoding -------------------------------------------------------------------
@@ -257,39 +277,6 @@ func GenerateRandomKey(length int) []byte {
 		panic(fmt.Sprintf("securecookie: error generating random key: %v", err))
 	}
 	return b
-}
-
-// CodecsFromPairs returns a slice of SecureCookie instances.
-//
-// It is a convenience function to create a list of codecs for key rotation. Note
-// that the generated Codecs will have the default options applied: callers
-// should iterate over each Codec and type-assert the underlying *SecureCookie to
-// change these.
-//
-// Example:
-//
-//	codecs, _ := securecookie.CodecsFromPairs(
-//	     []byte("new-key"),
-//	     []byte("old-key"),
-//	 )
-//
-//	// Modify each instance.
-//	for _, s := range codecs {
-//	       if cookie, ok := s.(*securecookie.SecureCookie); ok {
-//	           cookie.MaxAge(86400 * 7)
-//	           cookie.SetSerializer(securecookie.JSONEncoder{})
-//	       }
-//	   }
-func CodecsFromPairs(keys ...[]byte) ([]Codec, error) {
-	var codecs []Codec
-	for _, v := range keys {
-		codec, err := New(v)
-		if err != nil {
-			return nil, err
-		}
-		codecs = append(codecs, codec)
-	}
-	return codecs, nil
 }
 
 // EncodeMulti encodes a cookie value using a group of codecs.

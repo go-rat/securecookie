@@ -24,8 +24,8 @@ var testStrings = []string{"foo", "bar", "baz"}
 
 func TestSecureCookie(t *testing.T) {
 	// TODO test too old / too new timestamps
-	s1, err1 := New([]byte("12345678901234567890123456789012"))
-	s2, err2 := New([]byte("abcdefghijklmnopqrstuvwxyz123456"))
+	s1, err1 := New([]byte("12345678901234567890123456789012"), DefaultOptions)
+	s2, err2 := New([]byte("abcdefghijklmnopqrstuvwxyz123456"), DefaultOptions)
 	if err1 != nil {
 		t.Fatal(err1)
 	}
@@ -60,7 +60,7 @@ func TestSecureCookie(t *testing.T) {
 }
 
 func TestSecureCookieNilKey(t *testing.T) {
-	s1, err := New(nil)
+	s1, err := New(nil, DefaultOptions)
 	if s1 != nil {
 		t.Fatalf("Expected nil, got %#v", s1)
 	}
@@ -80,7 +80,7 @@ func TestDecodeInvalid(t *testing.T) {
 		"|||",
 		"cookie",
 	}
-	s, err := New([]byte("12345678901234567890123456789012"))
+	s, err := New([]byte("12345678901234567890123456789012"), DefaultOptions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,8 +182,8 @@ func TestEncoding(t *testing.T) {
 }
 
 func TestMultiError(t *testing.T) {
-	s1, err1 := New([]byte("12345678901234567890123456789012"))
-	s2, err2 := New([]byte("abcdefghijklmnopqrstuvwxyz123456"))
+	s1, err1 := New([]byte("12345678901234567890123456789012"), DefaultOptions)
+	s2, err2 := New([]byte("abcdefghijklmnopqrstuvwxyz123456"), DefaultOptions)
 	if err1 != nil {
 		t.Fatal(err1)
 	}
@@ -223,7 +223,7 @@ func TestMissingKey(t *testing.T) {
 	}
 
 	for _, key := range emptyKeys {
-		s1, err := New(key)
+		s1, err := New(key, DefaultOptions)
 		if s1 != nil {
 			t.Fatalf("Expected nil, got %#v", s1)
 		}
@@ -241,7 +241,7 @@ type FooBar struct {
 }
 
 func TestCustomType(t *testing.T) {
-	s1, err := New([]byte("12345678901234567890123456789012"))
+	s1, err := New([]byte("12345678901234567890123456789012"), DefaultOptions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +264,7 @@ type Cookie struct {
 
 func FuzzEncodeDecode(f *testing.F) {
 	fuzzer := fuzz.New()
-	s1, err := New([]byte("12345678901234567890123456789012"))
+	s1, err := New([]byte("12345678901234567890123456789012"), DefaultOptions)
 	if err != nil {
 		f.Fatal(err)
 	}
