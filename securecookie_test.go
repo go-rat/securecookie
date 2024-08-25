@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	fuzz "github.com/google/gofuzz"
 )
@@ -23,7 +24,6 @@ var testCookies = []any{
 var testStrings = []string{"foo", "bar", "baz"}
 
 func TestSecureCookie(t *testing.T) {
-	// TODO test too old / too new timestamps
 	s1, err1 := New([]byte("12345678901234567890123456789012"), DefaultOptions)
 	s2, err2 := New([]byte("abcdefghijklmnopqrstuvwxyz123456"), DefaultOptions)
 	if err1 != nil {
@@ -291,4 +291,101 @@ func FuzzEncodeDecode(f *testing.F) {
 			t.Fatalf("Expected %#v, got %#v.", s, dc)
 		}
 	})
+}
+
+func TestEncodeDecodeWithRotatedKeys(t *testing.T) {
+	key1 := []byte("abcdefghijklmnopqrstuvwxyz123456")
+	key2 := []byte("12345678901234567890123456789012")
+	s1, err := New(key1, &Options{RotatedKeys: [][]byte{key2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s2, err := New(key2, &Options{RotatedKeys: [][]byte{key1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := map[string]any{"foo": "bar"}
+	encoded1, err := s1.Encode("sid", value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded2, err := s2.Encode("sid", value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst1 := make(map[string]any)
+	if err = s2.Decode("sid", encoded1, &dst1); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(dst1, value) {
+		t.Fatalf("Expected %#v, got %#v.", value, dst1)
+	}
+	dst2 := make(map[string]any)
+	if err = s1.Decode("sid", encoded2, &dst2); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(dst2, value) {
+		t.Fatalf("Expected %#v, got %#v.", value, dst2)
+	}
+}
+
+func TestEncodeDecodeWithExpiredTimestamp(t *testing.T) {
+	s1, err := New([]byte("12345678901234567890123456789012"), &Options{MaxAge: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := map[string]any{"foo": "bar"}
+	encoded, err := s1.Encode("sid", value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2 * time.Second)
+	dst := make(map[string]any)
+	if err = s1.Decode("sid", encoded, &dst); err == nil {
+		t.Fatal("Expected failure due to expired timestamp.")
+	}
+	if !errors.Is(err, ErrTimestampExpired) {
+		t.Fatalf("Expected ErrTimestampExpired, got %#v", err)
+	}
+}
+
+func TestEncodeDecodeWithFutureTimestamp(t *testing.T) {
+	s1, err := New([]byte("12345678901234567890123456789012"), &Options{MinAge: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := map[string]any{"foo": "bar"}
+	encoded, err := s1.Encode("sid", value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := make(map[string]any)
+	if err = s1.Decode("sid", encoded, &dst); err == nil {
+		t.Fatal("Expected failure due to future timestamp.")
+	}
+	if !errors.Is(err, ErrTimestampTooNew) {
+		t.Fatalf("Expected ErrTimestampTooNew, got %#v", err)
+	}
+}
+
+func TestEncodeDecodeWithInvalidKeyLength(t *testing.T) {
+	_, err := New([]byte("shortkey"), DefaultOptions)
+	if !errors.Is(err, ErrKeyLength) {
+		t.Fatalf("Expected ErrKeyLength, got %#v", err)
+	}
+}
+
+func TestEncodeDecodeWithMaxLengthExceeded(t *testing.T) {
+	s1, err := New([]byte("12345678901234567890123456789012"), &Options{MaxLength: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := map[string]any{"foo": "bar"}
+	_, err = s1.Encode("sid", value)
+	if err == nil {
+		t.Fatal("Expected failure due to max length exceeded.")
+	}
+	if !errors.Is(err, ErrValueTooLong) {
+		t.Fatalf("Expected ErrValueTooLong, got %#v", err)
+	}
 }

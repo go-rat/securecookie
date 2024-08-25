@@ -21,6 +21,10 @@ var (
 	ErrNoCodecs         = fmt.Errorf("no codecs provided")
 	ErrValueNotByte     = fmt.Errorf("the value is not a []byte")
 	ErrValueNotBytePtr  = fmt.Errorf("the value is not a *[]byte")
+	ErrValueTooLong     = fmt.Errorf("the value is too long")
+	ErrTimestampInvalid = fmt.Errorf("the timestamp is invalid")
+	ErrTimestampTooNew  = fmt.Errorf("the timestamp is too new")
+	ErrTimestampExpired = fmt.Errorf("the timestamp is expired")
 )
 
 var DefaultOptions = &Options{
@@ -41,14 +45,8 @@ type Codec interface {
 
 // New returns a new SecureCookie.
 //
-// hashKey is required, used to authenticate values using HMAC. Create it using
-// GenerateRandomKey(). It is recommended to use a key with 32 or 64 bytes.
-//
-// blockKey is optional, used to encrypt values. Create it using
-// GenerateRandomKey(). The key length must correspond to the key size
-// of the encryption algorithm. For AES, used by default, valid lengths are
-// 16, 24, or 32 bytes to select AES-128, AES-192, or AES-256.
-// The default encoder used for cookie serialization is encoding/gob.
+// Key is required and must be 32 bytes, used to authenticate and
+// encrypt cookie values.
 //
 // Note that keys created using GenerateRandomKey() are not automatically
 // persisted. New keys will be created when the application is restarted, and
@@ -59,6 +57,20 @@ func New(key []byte, options *Options) (*SecureCookie, error) {
 	}
 	if options == nil {
 		options = DefaultOptions
+	}
+	if options.MaxAge == 0 {
+		options.MaxAge = DefaultOptions.MaxAge
+	}
+	if options.MaxLength == 0 {
+		options.MaxLength = DefaultOptions.MaxLength
+	}
+	if options.Serializer == nil {
+		options.Serializer = DefaultOptions.Serializer
+	}
+	if options.TimeFunc == nil {
+		options.TimeFunc = func() int64 {
+			return time.Now().UTC().Unix()
+		}
 	}
 	s := &SecureCookie{
 		key:         key,
@@ -100,9 +112,9 @@ type SecureCookie struct {
 // It serializes, optionally encrypts, signs with a message authentication code,
 // and finally encodes the value.
 //
-// The name argument is the cookie name. It is stored with the encoded value.
+// The name argument is the cookie name. It is used to authenticate the cookie.
 // The value argument is the value to be encoded. It can be any value that can
-// be encoded using the currently selected serializer; see SetSerializer().
+// be encoded using the currently selected serializer.
 //
 // It is the client's responsibility to ensure that value, when encoded using
 // the current serialization/encryption settings on s and then base64-encoded,
@@ -119,7 +131,9 @@ func (s *SecureCookie) Encode(name string, value any) (string, error) {
 	key := s.key
 	index := -1
 walk:
-	b, err = s.encrypt([]byte(name), key, b)
+	// We can't directly use 'b' here because if the encryption fails, we need
+	// to retry with a different key.
+	enc, err := s.encrypt([]byte(name), key, b)
 	if err != nil {
 		errors = append(errors, err)
 		if index++; index < len(s.rotatedKeys) {
@@ -129,10 +143,10 @@ walk:
 			return "", errors
 		}
 	}
-	b = encode(b)
+	b = encode(enc)
 	// 3. Check length.
 	if s.maxLength != 0 && len(b) > s.maxLength {
-		return "", fmt.Errorf("the value is too long: %d", len(b))
+		return "", ErrValueTooLong
 	}
 	// Done.
 	return string(b), nil
@@ -144,14 +158,14 @@ walk:
 // finally deserializes the value.
 //
 // The name argument is the cookie name. It must be the same name used when
-// it was stored. The value argument is the encoded cookie value. The dst
+// it was encoded. The value argument is the encoded cookie value. The dst
 // argument is where the cookie will be decoded. It must be a pointer.
 func (s *SecureCookie) Decode(name, value string, dst any) error {
 	var err error
 	var errors MultiError
 	// 1. Check length.
 	if s.maxLength != 0 && len(value) > s.maxLength {
-		return fmt.Errorf("the value is too long: %d", len(value))
+		return ErrValueTooLong
 	}
 	// 2. Decode from base64.
 	b, err := decode([]byte(value))
@@ -162,7 +176,9 @@ func (s *SecureCookie) Decode(name, value string, dst any) error {
 	key := s.key
 	index := -1
 walk:
-	b, err = s.decrypt([]byte(name), key, b)
+	// We can't directly use 'b' here because if the decryption fails, we need
+	// to retry with a different key.
+	dec, err := s.decrypt([]byte(name), key, b)
 	if err != nil {
 		errors = append(errors, err)
 		if index++; index < len(s.rotatedKeys) {
@@ -172,20 +188,20 @@ walk:
 			return errors
 		}
 	}
-	parts := bytes.SplitN(b, []byte("|"), 2)
+	parts := bytes.SplitN(dec, []byte("|"), 2)
 	if len(parts) != 2 {
 		return ErrDecryptionFailed
 	}
 	ts, err := strconv.ParseInt(string(parts[0]), 10, 64)
 	if err != nil {
-		return fmt.Errorf("the timestamp is not valid: %s", parts[1])
+		return ErrTimestampInvalid
 	}
 	now := s.timestamp()
 	if s.minAge != 0 && ts > now-s.minAge {
-		return fmt.Errorf("timestamp is too new: %d", ts)
+		return ErrTimestampTooNew
 	}
 	if s.maxAge != 0 && ts < now-s.maxAge {
-		return fmt.Errorf("expired timestamp: %d", ts)
+		return ErrTimestampExpired
 	}
 	// 4. Deserialize.
 	if err = s.sz.Deserialize(parts[1], dst); err != nil {
