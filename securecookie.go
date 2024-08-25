@@ -119,7 +119,7 @@ func (s *SecureCookie) Encode(name string, value any) (string, error) {
 	key := s.key
 	index := -1
 walk:
-	b, err = s.encrypt(name, key, b)
+	b, err = s.encrypt([]byte(name), key, b)
 	if err != nil {
 		errors = append(errors, err)
 		if index++; index < len(s.rotatedKeys) {
@@ -162,7 +162,7 @@ func (s *SecureCookie) Decode(name, value string, dst any) error {
 	key := s.key
 	index := -1
 walk:
-	b, err = s.decrypt(key, b)
+	b, err = s.decrypt([]byte(name), key, b)
 	if err != nil {
 		errors = append(errors, err)
 		if index++; index < len(s.rotatedKeys) {
@@ -172,14 +172,11 @@ walk:
 			return errors
 		}
 	}
-	parts := bytes.SplitN(b, []byte("|"), 3)
-	if len(parts) != 3 {
+	parts := bytes.SplitN(b, []byte("|"), 2)
+	if len(parts) != 2 {
 		return ErrDecryptionFailed
 	}
-	if string(parts[0]) != name {
-		return fmt.Errorf("the name is not valid: %s", name)
-	}
-	ts, err := strconv.ParseInt(string(parts[1]), 10, 64)
+	ts, err := strconv.ParseInt(string(parts[0]), 10, 64)
 	if err != nil {
 		return fmt.Errorf("the timestamp is not valid: %s", parts[1])
 	}
@@ -191,7 +188,7 @@ walk:
 		return fmt.Errorf("expired timestamp: %d", ts)
 	}
 	// 4. Deserialize.
-	if err = s.sz.Deserialize(parts[2], dst); err != nil {
+	if err = s.sz.Deserialize(parts[1], dst); err != nil {
 		return err
 	}
 	// Done.
@@ -208,7 +205,7 @@ func (s *SecureCookie) timestamp() int64 {
 
 // encrypt encrypts a value using the given key, nonce will be generated
 // and prepended to the ciphertext.
-func (s *SecureCookie) encrypt(name string, key, value []byte) ([]byte, error) {
+func (s *SecureCookie) encrypt(name, key, value []byte) ([]byte, error) {
 	aead, err := chacha20poly1305.NewX(key)
 	if err != nil {
 		return nil, err
@@ -217,19 +214,18 @@ func (s *SecureCookie) encrypt(name string, key, value []byte) ([]byte, error) {
 	if _, err = rand.Read(nonce); err != nil {
 		return nil, err
 	}
-	// We create a buffer of "name|timestamp|ciphertext" so that we can verify
+	// We create a buffer of "timestamp|ciphertext" so that we can verify
 	// the validity of the timestamp after decrypting, but before deserializing.
 	buf := new(bytes.Buffer)
-	buf.WriteString(name + "|")
 	buf.WriteString(strconv.FormatInt(s.timestamp(), 10) + "|")
 	buf.Write(value)
-	value = aead.Seal(nonce, nonce, buf.Bytes(), nil)
+	value = aead.Seal(nonce, nonce, buf.Bytes(), name)
 	return value, nil
 }
 
 // decrypt decrypts a value using the given key, nonce will be extracted from
 // the ciphertext.
-func (s *SecureCookie) decrypt(key, value []byte) ([]byte, error) {
+func (s *SecureCookie) decrypt(name, key, value []byte) ([]byte, error) {
 	aead, err := chacha20poly1305.NewX(key)
 	if err != nil {
 		return nil, err
@@ -238,7 +234,7 @@ func (s *SecureCookie) decrypt(key, value []byte) ([]byte, error) {
 		return nil, ErrDecryptionFailed
 	}
 	nonce, ciphertext := value[:aead.NonceSize()], value[aead.NonceSize():]
-	return aead.Open(nil, nonce, ciphertext, nil)
+	return aead.Open(nil, nonce, ciphertext, name)
 }
 
 // Encoding -------------------------------------------------------------------
