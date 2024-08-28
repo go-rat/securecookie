@@ -58,12 +58,6 @@ func New(key []byte, options *Options) (*SecureCookie, error) {
 	if options == nil {
 		options = DefaultOptions
 	}
-	if options.MaxAge == 0 {
-		options.MaxAge = DefaultOptions.MaxAge
-	}
-	if options.MaxLength == 0 {
-		options.MaxLength = DefaultOptions.MaxLength
-	}
 	if options.Serializer == nil {
 		options.Serializer = DefaultOptions.Serializer
 	}
