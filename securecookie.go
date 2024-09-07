@@ -8,12 +8,17 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/gob"
 	"fmt"
 	"strconv"
 	"time"
 
 	"golang.org/x/crypto/chacha20poly1305"
 )
+
+func init() {
+	gob.Register([]any{})
+}
 
 var (
 	ErrKeyLength        = fmt.Errorf("the key must be %d bytes", chacha20poly1305.KeySize)
