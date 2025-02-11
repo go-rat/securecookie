@@ -46,14 +46,14 @@ func TestSecureCookie(t *testing.T) {
 			continue
 		}
 		dst := make(map[string]any)
-		if err = s1.Decode("sid", encoded, &dst); err != nil {
+		if _, err = s1.Decode("sid", encoded, &dst); err != nil {
 			t.Fatalf("%#v: %#v", err, encoded)
 		}
 		if !reflect.DeepEqual(dst, value) {
 			t.Fatalf("Expected %#v, got %#v.", value, dst)
 		}
 		dst2 := make(map[string]any)
-		if err = s2.Decode("sid", encoded, &dst2); err == nil {
+		if _, err = s2.Decode("sid", encoded, &dst2); err == nil {
 			t.Fatalf("Expected failure decoding.")
 		}
 	}
@@ -90,7 +90,7 @@ func TestDecodeInvalid(t *testing.T) {
 			base64.StdEncoding,
 			base64.URLEncoding,
 		} {
-			err := s.Decode("name", enc.EncodeToString([]byte(v)), &dst)
+			_, err = s.Decode("name", enc.EncodeToString([]byte(v)), &dst)
 			if err == nil {
 				t.Fatalf("%d: expected failure decoding", i)
 			}
@@ -250,7 +250,7 @@ func TestCustomType(t *testing.T) {
 	encoded, _ := s1.Encode("sid", src)
 
 	dst := &FooBar{}
-	_ = s1.Decode("sid", encoded, dst)
+	_, _ = s1.Decode("sid", encoded, dst)
 	if dst.Foo != 42 || dst.Bar != "bar" {
 		t.Fatalf("Expected %#v, got %#v", src, dst)
 	}
@@ -283,7 +283,7 @@ func FuzzEncodeDecode(f *testing.F) {
 			t.Errorf("Encode failed: %#v", err)
 		}
 		dc := Cookie{}
-		err = s1.Decode("sid", encoded, &dc)
+		_, err = s1.Decode("sid", encoded, &dc)
 		if err != nil {
 			t.Errorf("Decode failed: %#v", err)
 		}
@@ -314,14 +314,14 @@ func TestEncodeDecodeWithRotatedKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	dst1 := make(map[string]any)
-	if err = s2.Decode("sid", encoded1, &dst1); err != nil {
+	if _, err = s2.Decode("sid", encoded1, &dst1); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(dst1, value) {
 		t.Fatalf("Expected %#v, got %#v.", value, dst1)
 	}
 	dst2 := make(map[string]any)
-	if err = s1.Decode("sid", encoded2, &dst2); err != nil {
+	if _, err = s1.Decode("sid", encoded2, &dst2); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(dst2, value) {
@@ -341,7 +341,7 @@ func TestEncodeDecodeWithExpiredTimestamp(t *testing.T) {
 	}
 	time.Sleep(2 * time.Second)
 	dst := make(map[string]any)
-	if err = s1.Decode("sid", encoded, &dst); err == nil {
+	if _, err = s1.Decode("sid", encoded, &dst); err == nil {
 		t.Fatal("Expected failure due to expired timestamp.")
 	}
 	if !errors.Is(err, ErrTimestampExpired) {
@@ -360,7 +360,7 @@ func TestEncodeDecodeWithFutureTimestamp(t *testing.T) {
 		t.Fatal(err)
 	}
 	dst := make(map[string]any)
-	if err = s1.Decode("sid", encoded, &dst); err == nil {
+	if _, err = s1.Decode("sid", encoded, &dst); err == nil {
 		t.Fatal("Expected failure due to future timestamp.")
 	}
 	if !errors.Is(err, ErrTimestampTooNew) {

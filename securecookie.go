@@ -45,7 +45,7 @@ var DefaultOptions = &Options{
 // Codec defines an interface to encode and decode cookie values.
 type Codec interface {
 	Encode(name string, value any) (string, error)
-	Decode(name, value string, dst any) error
+	Decode(name, value string, dst any) (int64, error)
 }
 
 // New returns a new SecureCookie.
@@ -159,17 +159,17 @@ walk:
 // The name argument is the cookie name. It must be the same name used when
 // it was encoded. The value argument is the encoded cookie value. The dst
 // argument is where the cookie will be decoded. It must be a pointer.
-func (s *SecureCookie) Decode(name, value string, dst any) error {
+func (s *SecureCookie) Decode(name, value string, dst any) (int64, error) {
 	var err error
 	var errors MultiError
 	// 1. Check length.
 	if s.maxLength != 0 && len(value) > s.maxLength {
-		return ErrValueTooLong
+		return 0, ErrValueTooLong
 	}
 	// 2. Decode from base64.
 	b, err := decode([]byte(value))
 	if err != nil {
-		return err
+		return 0, err
 	}
 	// 3. Decrypt.
 	key := s.key
@@ -184,30 +184,30 @@ walk:
 			key = s.rotatedKeys[index]
 			goto walk
 		} else {
-			return errors
+			return 0, errors
 		}
 	}
 	parts := bytes.SplitN(dec, []byte("|"), 2)
 	if len(parts) != 2 {
-		return ErrDecryptionFailed
+		return 0, ErrDecryptionFailed
 	}
 	ts, err := strconv.ParseInt(string(parts[0]), 10, 64)
 	if err != nil {
-		return ErrTimestampInvalid
+		return 0, ErrTimestampInvalid
 	}
 	now := s.timestamp()
 	if s.minAge != 0 && ts > now-s.minAge {
-		return ErrTimestampTooNew
+		return ts, ErrTimestampTooNew
 	}
 	if s.maxAge != 0 && ts < now-s.maxAge {
-		return ErrTimestampExpired
+		return ts, ErrTimestampExpired
 	}
 	// 4. Deserialize.
 	if err = s.sz.Deserialize(parts[1], dst); err != nil {
-		return err
+		return ts, err
 	}
 	// Done.
-	return nil
+	return ts, nil
 }
 
 // timestamp returns the current timestamp, in seconds.
@@ -325,7 +325,7 @@ func DecodeMulti(name string, value string, dst any, codecs ...Codec) error {
 
 	var errors MultiError
 	for _, codec := range codecs {
-		err := codec.Decode(name, value, dst)
+		_, err := codec.Decode(name, value, dst)
 		if err == nil {
 			return nil
 		}
