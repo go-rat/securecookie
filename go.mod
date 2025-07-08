@@ -2,7 +2,7 @@ module github.com/go-rat/securecookie
 
 go 1.23.0
 
-toolchain go1.24.4
+toolchain go1.24.5
 
 require (
 	github.com/google/gofuzz v1.2.0
