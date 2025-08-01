@@ -1,8 +1,6 @@
 module github.com/libtnb/securecookie
 
-go 1.23.0
-
-toolchain go1.24.5
+go 1.24.0
 
 require (
 	github.com/google/gofuzz v1.2.0
